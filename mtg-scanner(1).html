@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>MTG Scanner</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#111;color:#eee;min-height:100vh;padding:12px}
+h1{font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;color:#fff}
+.card{background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:14px;margin-bottom:12px}
+video{width:100%;border-radius:10px;background:#000;aspect-ratio:4/3;object-fit:cover;display:block}
+.row{display:flex;gap:8px;margin-top:10px}
+button{flex:1;padding:13px 8px;font-size:15px;border-radius:8px;border:1px solid #444;background:#2a2a2a;color:#eee;cursor:pointer;font-family:inherit}
+button:active{background:#3a3a3a;transform:scale(0.98)}
+button:disabled{opacity:0.4}
+button.primary{background:#7c3aed;border-color:#7c3aed;color:#fff}
+button.primary:active{background:#6d28d9}
+#status{font-size:13px;margin:10px 0 4px;padding:8px 12px;border-radius:8px;background:#2a2a2a;color:#aaa;min-height:36px;display:flex;align-items:center;gap:6px}
+.card-img{width:100%;border-radius:8px;margin-bottom:10px;max-height:280px;object-fit:contain}
+.card-name{font-size:16px;font-weight:600;color:#fff}
+.card-meta{font-size:13px;color:#aaa;margin-top:3px}
+.mana{font-family:monospace;font-size:12px;background:#2a2a2a;padding:2px 7px;border-radius:99px;color:#ddd}
+.card-text{font-size:12px;color:#999;margin-top:8px;border-top:1px solid #333;padding-top:8px;line-height:1.6}
+.empty{color:#666;font-size:13px;text-align:center;padding:24px 0}
+.deck-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a2a}
+.deck-row:last-child{border-bottom:none}
+.qty{background:#2a2a2a;border-radius:6px;padding:2px 8px;font-size:13px;font-weight:600;min-width:32px;text-align:center;color:#fff}
+.deck-name{flex:1;font-size:14px;color:#eee}
+.deck-type{font-size:11px;color:#666}
+.btn-rm{background:none;border:none;cursor:pointer;color:#666;font-size:22px;padding:2px 8px}
+.stats{display:flex;gap:8px;margin-bottom:12px}
+.stat{background:#2a2a2a;border-radius:8px;padding:8px;flex:1;text-align:center}
+.stat-n{font-size:22px;font-weight:600;color:#fff}
+.stat-l{font-size:11px;color:#666;margin-top:2px}
+.section-title{font-size:14px;font-weight:600;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;color:#fff}
+</style>
+</head>
+<body>
+<h1>🃏 MTG Scanner</h1>
+
+<div class="card">
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status">⚪ Appuie sur "Activer caméra"</div>
+  <div class="row">
+    <button id="start-btn" class="primary" onclick="startCam()">📷 Activer caméra</button>
+    <button id="scan-btn" onclick="scan()" disabled>🔍 Scanner</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-title">Carte identifiée</div>
+  <div id="empty-card" class="empty">📷 Scanne une carte MTG</div>
+  <div id="card-detail" style="display:none"></div>
+  <div class="row" id="add-row" style="display:none">
+    <button class="primary" onclick="addDeck()">➕ Ajouter au deck</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-title">
+    Mon deck
+    <button style="flex:0;font-size:12px;padding:5px 12px" onclick="exportDeck()">⬇ Exporter</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-n" id="s-total">0</div><div class="stat-l">total</div></div>
+    <div class="stat"><div class="stat-n" id="s-uniq">0</div><div class="stat-l">uniques</div></div>
+    <div class="stat"><div class="stat-n" id="s-cmc">—</div><div class="stat-l">CMC moy.</div></div>
+  </div>
+  <div id="deck-list"><div class="empty">Deck vide — commence à scanner !</div></div>
+</div>
+
+<script>
+let camStream=null, currentCard=null, deck=[];
+
+function setStatus(msg){ document.getElementById('status').textContent = msg; }
+
+async function startCam(){
+  setStatus('⏳ Démarrage caméra...');
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'} }
+    });
+    const vid = document.getElementById('video');
+    vid.srcObject = camStream;
+    await new Promise(res => { vid.onloadedmetadata = res; });
+    await vid.play();
+    document.getElementById('scan-btn').disabled = false;
+    document.getElementById('start-btn').textContent = '✅ Active';
+    document.getElementById('start-btn').disabled = true;
+    setStatus('✅ Caméra prête — pointe sur une carte et scanne');
+  }catch(e){
+    setStatus('❌ Erreur caméra : '+e.message);
+  }
+}
+
+async function scan(){
+  if(!camStream){ setStatus('❌ Active la caméra d\'abord'); return; }
+  const vid = document.getElementById('video');
+  if(!vid.videoWidth){ setStatus('⏳ Caméra pas encore prête, réessaie'); return; }
+
+  setStatus('⏳ Capture de l\'image...');
+  const cv = document.createElement('canvas');
+  cv.width = vid.videoWidth;
+  cv.height = vid.videoHeight;
+  cv.getContext('2d').drawImage(vid,0,0);
+  const b64 = cv.toDataURL('image/jpeg',0.8).split(',')[1];
+
+  setStatus('🔵 Identification en cours...');
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('empty-card').style.display = 'none';
+  document.getElementById('card-detail').style.display = 'none';
+  document.getElementById('add-row').style.display = 'none';
+
+  try{
+    const r = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:800,
+        messages:[{role:'user',content:[
+          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
+          {type:'text',text:'Identifie cette carte Magic: The Gathering. Retourne UNIQUEMENT du JSON valide sans markdown: {"found":true/false,"name":"nom exact","manaCost":"{1}{U}" ou null,"cmc":nombre ou null,"type":"type complet","set":"edition","rarity":"Common/Uncommon/Rare/Mythic Rare","text":"texte règle max 150 chars","pt":"force/endurance ou null"}. Si pas de carte retourne {"found":false}.'}
+        ]}]
+      })
+    });
+    if(!r.ok){ setStatus('❌ Erreur API : '+r.status); document.getElementById('scan-btn').disabled=false; return; }
+    const data = await r.json();
+    const raw = data.content.filter(x=>x.type==='text').map(x=>x.text).join('');
+    let card;
+    try{ card = JSON.parse(raw); }catch{ card={found:false}; }
+    if(card && card.found){
+      currentCard = card;
+      showCard(card);
+      setStatus('✅ Carte identifiée : '+card.name);
+      document.getElementById('add-row').style.display = 'flex';
+    }else{
+      document.getElementById('empty-card').style.display = 'block';
+      document.getElementById('empty-card').textContent = '❌ Carte non reconnue — réessaie';
+      setStatus('❌ Carte non reconnue');
+    }
+  }catch(e){
+    setStatus('❌ Erreur : '+e.message);
+    document.getElementById('empty-card').style.display = 'block';
+    document.getElementById('empty-card').textContent = '❌ Erreur réseau';
+  }
+  document.getElementById('scan-btn').disabled = false;
+}
+
+function rarCol(r){return{Common:'#aaa',Uncommon:'#9bb7d4',Rare:'#f0c040','Mythic Rare':'#e8691b'}[r]||'#aaa';}
+
+function showCard(c){
+  const img = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(c.name)}&format=image&version=normal`;
+  const det = document.getElementById('card-detail');
+  det.innerHTML = `
+    <img class="card-img" src="${img}" onerror="this.style.display='none'" alt="${c.name}">
+    <div class="card-name">${c.name}</div>
+    ${c.manaCost?`<div class="card-meta"><span class="mana">${c.manaCost}</span></div>`:''}
+    <div class="card-meta">${c.type||''}</div>
+    ${c.rarity?`<div class="card-meta" style="color:${rarCol(c.rarity)}">${c.rarity}${c.set?' — '+c.set:''}</div>`:''}
+    ${c.pt?`<div class="card-meta">⚔ ${c.pt}</div>`:''}
+    ${c.text?`<div class="card-text">${c.text}</div>`:''}
+  `;
+  det.style.display = 'block';
+}
+
+function addDeck(){
+  if(!currentCard)return;
+  const ex = deck.find(d=>d.name===currentCard.name);
+  if(ex) ex.qty++;
+  else deck.push({name:currentCard.name,type:currentCard.type,cmc:currentCard.cmc,rarity:currentCard.rarity,qty:1});
+  renderDeck();
+  setStatus('✅ '+currentCard.name+' ajoutée au deck !');
+}
+
+function removeCard(name){
+  const i = deck.findIndex(d=>d.name===name);
+  if(i===-1)return;
+  if(deck[i].qty>1) deck[i].qty--; else deck.splice(i,1);
+  renderDeck();
+}
+
+function renderDeck(){
+  const total = deck.reduce((s,c)=>s+c.qty,0);
+  const uniq = deck.length;
+  const cf = deck.filter(c=>c.cmc!=null);
+  const avg = cf.length?(cf.reduce((s,c)=>s+c.cmc*c.qty,0)/cf.reduce((s,c)=>s+c.qty,0)).toFixed(1):'—';
+  document.getElementById('s-total').textContent = total;
+  document.getElementById('s-uniq').textContent = uniq;
+  document.getElementById('s-cmc').textContent = avg;
+  const list = document.getElementById('deck-list');
+  if(!deck.length){list.innerHTML='<div class="empty">Deck vide.</div>';return;}
+  list.innerHTML = [...deck].sort((a,b)=>(a.cmc||0)-(b.cmc||0)).map(c=>`
+    <div class="deck-row">
+      <span class="qty">${c.qty}x</span>
+      <div style="flex:1">
+        <div class="deck-name">${c.name}</div>
+        <div class="deck-type">${c.type||''}</div>
+      </div>
+      <span style="font-size:11px;color:${rarCol(c.rarity)}">${c.cmc!=null?c.cmc+' ☀':''}</span>
+      <button class="btn-rm" onclick="removeCard('${c.name.replace(/'/g,"\\'")}')">−</button>
+    </div>
+  `).join('');
+}
+
+function exportDeck(){
+  if(!deck.length){alert('Ton deck est vide !');return;}
+  const txt = deck.map(c=>`${c.qty} ${c.name}`).join('\n');
+  const blob = new Blob([txt],{type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'deck-archidekt.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+renderDeck();
+</script>
+</body>
+</html>
